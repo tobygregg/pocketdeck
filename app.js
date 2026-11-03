@@ -77,13 +77,12 @@ function haptic() {
   try { if (navigator.vibrate) navigator.vibrate(8); else hapticLabel.click(); } catch {}
 }
 
-/* ================= the link to your Mac (encrypted, via public relays) ================= */
-const brokers = () => LS.get('brokers', null) || undefined;   // advanced/testing override
+/* ================= the link to your Mac (encrypted, over normal HTTPS) ================= */
+const REPO = window.PD_REPO || null;   // where your Mac publishes its (encrypted) address — from deck-config.js
 
 async function api(method, path, body) {
-  if (!S.link) throw new Error('Still connecting…');
-  const res = await S.link.request('main', method, path.replace(/^\/api/, ''), body || {});
-  S.macSeen = Date.now(); updateConnState();
+  if (!S.link || !S.link.key) throw new Error('Still connecting…');
+  const res = await S.link.request(method, path.replace(/^\/api/, ''), body || {});
   const d = res.data || {};
   if (res.status >= 400 || d.ok === false) throw new Error(d.error || `Error ${res.status}`);
   return d;
@@ -97,10 +96,10 @@ function keepHash() { if (S.secret && location.hash !== '#pd1.' + S.secret) hist
 
 async function boot() {
   if (!window.isSecureContext || !(window.crypto && crypto.subtle)) {
-    return showMessage('Open the https:// link 🔐', 'PocketDeck encrypts everything, which only works on secure pages. Scan the QR code on your Mac to get the right link.');
+    return showMessage('Open the https:// link 🔐', 'PocketDeck encrypts everything, which only works on secure pages. Scan the QR code in the PocketDeck app on your Mac.');
   }
   const fromHash = hashSecret();
-  if (fromHash && fromHash !== LS.get('secret', null)) { LS.set('secret', fromHash); LS.del('config'); }
+  if (fromHash && fromHash !== LS.get('secret', null)) { LS.set('secret', fromHash); LS.del('config'); LS.del('url'); }
   S.secret = LS.get('secret', null);
   if (!S.secret) return showPair();
   keepHash();
@@ -119,7 +118,7 @@ async function loadDeck() {
     maybeTip(); measure();
   } catch (e) {
     if (!S.secret) return;
-    if (!S.config) showOffline(e.message);
+    if (!S.config) showOffline();
     setTimeout(loadDeck, 2500);
   }
 }
@@ -128,21 +127,14 @@ function indexActions() { S.actionMap = Object.fromEntries(S.actions.map(a => [a
 async function pairWithCode(code) {
   const clean = PDLink.normCode(code);
   if (clean.length !== 8) throw new Error('The code is 8 characters');
-  const tmp = new PDLink.Link({ brokers: brokers() });
-  try {
-    await tmp.join('code', PDLink.codeSecret(clean), 'phone');
-    const res = await tmp.request('code', 'POST', '/pair', { device: 'iPhone' }, 15000);
-    if (!res.data || !res.data.secret) throw new Error('Pairing failed — try again');
-    LS.set('secret', res.data.secret); LS.del('config');
-    S.secret = res.data.secret; keepHash();
-  } catch (e) {
-    throw new Error(/answer/.test(e.message) ? 'That code didn’t work. Check it on your Mac (codes change every 10 min and work once).' : e.message);
-  } finally { tmp.close(); }
+  const r = await PDLink.pairWithCode(REPO, clean);
+  LS.set('secret', r.secret); LS.set('url', r.url); LS.del('config');
+  S.secret = r.secret; keepHash();
 }
 
 function unpair(msg) {
-  S.secret = null; LS.del('secret'); LS.del('config');
-  if (S.link) { S.link.close(); S.link = null; }
+  S.secret = null; LS.del('secret'); LS.del('config'); LS.del('url');
+  if (S.link) { S.link.stop(); S.link = null; }
   history.replaceState(null, '', location.pathname + location.search);
   showPair(msg);
 }
@@ -158,7 +150,7 @@ function showPair(msg) {
     if (busy) return;
     const v = PDLink.normCode(inp.value);
     if (v.length !== 8) { m.textContent = 'The code is 8 characters'; return; }
-    busy = true; m.textContent = ''; btn.textContent = 'Pairing…'; haptic();
+    busy = true; m.textContent = ''; btn.textContent = 'Finding your Mac…'; haptic();
     try { await pairWithCode(v); boot(); }
     catch (e) { m.textContent = e.message; btn.textContent = 'Pair ✨'; busy = false; inp.select(); }
   };
@@ -171,7 +163,7 @@ function showPair(msg) {
   root.append(h('div', { class: 'pair' },
     h('div', { class: 'logo', html: I.logo }),
     h('h1', {}, 'Pair with your Mac'),
-    h('p', {}, 'Easiest: point your camera at the QR code on your Mac. Or type the 8-character code shown there:'),
+    h('p', {}, 'Easiest: open PocketDeck on your Mac and point your camera at the QR code. Or type the 8-character code shown there:'),
     inp, btn, m,
     h('p', { class: 'fine' }, 'Works from anywhere once paired: home Wi-Fi, 4G, school. Everything is end-to-end encrypted.')));
 }
@@ -180,10 +172,10 @@ function showMessage(title, text, ...buttons) {
   root.innerHTML = '';
   root.append(h('div', { class: 'pair' }, h('div', { class: 'logo', html: I.logo }), h('h1', {}, title), h('p', {}, text), buttons));
 }
-function showOffline(why) {
+function showOffline() {
   showMessage('Can’t reach your Mac 😵‍💫',
-    S.relaysUp ? 'Your phone is online but your Mac isn’t answering. Is it awake, online and running PocketDeck? Retrying automatically…'
-               : 'Looks like your phone has no internet right now. Retrying automatically…',
+    S.linkState === 'offline' ? 'Looks like your phone has no internet right now. Retrying automatically…'
+      : 'Your Mac isn’t answering. Is it awake, online and running PocketDeck? Retrying automatically…',
     h('button', { class: 'btn', onclick: () => location.reload() }, 'Try again'),
     h('button', { class: 'btn', onclick: () => unpair() }, 'Pair again'));
 }
@@ -196,61 +188,58 @@ function maybeTip() {
 
 /* ================= live connection ================= */
 async function connect() {
-  if (S.link) S.link.close();
-  S.relaysUp = 0;
+  if (S.link) S.link.stop();
+  S.linkState = 'connecting';
   S.link = new PDLink.Link({
-    brokers: brokers(),
-    onState: (up, total) => { S.relaysUp = up; S.relaysTotal = total; if (up) watch(); updateConnState(); },
-    onMessage: (room, msg) => {
-      if (room !== 'main') return;
-      S.macSeen = Date.now(); updateConnState();
-      if (msg.k === 'evt') onEvent(msg.event, msg.data);
+    secret: S.secret, repo: REPO, url: LS.get('url', null),
+    onUrl: u => LS.set('url', u),
+    onEvent: onEvent,
+    onState: st => {
+      S.linkState = st;
+      if (st === 'revoked') return unpair('Your Mac unpaired this phone. Scan the QR code again to reconnect.');
+      updateConnState();
     },
   });
-  S.relaysTotal = S.link.relays.length;
-  await S.link.join('main', PDLink.unb64u(S.secret), 'phone');
+  S.link.setWatching(document.visibilityState === 'visible');
+  await S.link.start();
 }
-// tell the Mac someone's looking, so it streams live status
-function watch() { if (S.link && document.visibilityState === 'visible') S.link.send('main', { k: 'watch' }); }
-setInterval(watch, 15000);
 function onEvent(ev, data) {
   if (ev === 'status') onStatus(data);
   else if (ev === 'config') onRemoteConfig(data);
   else if (ev === 'toast') toast(data.text, data.kind);
-  else if (ev === 'revoked') unpair('Your Mac unpaired this phone. Scan the QR code again to reconnect.');
 }
 function updateConnState() {
-  const macOk = Date.now() - (S.macSeen || 0) < 9000;
-  S.connWhy = !S.relaysUp ? 'offline' : macOk ? 'ok' : 'mac';
+  S.connWhy = S.linkState === 'ok' ? 'ok' : S.linkState === 'offline' ? 'offline' : S.linkState === 'connecting' ? 'connecting' : 'mac';
   const on = S.connWhy === 'ok';
   if (on && !S.connected) setTimeout(() => { S.latency = null; measure(); }, 400); // just came back: fresh measurement
   S.connected = on;
   const dot = $('.live-dot'); if (dot) dot.classList.toggle('on', on);
-  if (S.config) banner(!on, S.connWhy === 'offline' ? 'No internet — reconnecting' : 'Waiting for your Mac…');
+  if (S.config) banner(!on && S.connWhy !== 'connecting', S.connWhy === 'offline' ? 'No internet — reconnecting' : 'Waiting for your Mac…');
   updateSubtitle();
 }
-setInterval(updateConnState, 3000);
-/* latency: a full round trip phone → relay → Mac → relay → phone */
+/* latency: a full encrypted round trip phone → Mac → phone */
 async function measure() {
   if (!S.link || document.visibilityState !== 'visible') return;
   const t0 = performance.now();
   try {
     await api('GET', '/ping');
     const ms = Math.round(performance.now() - t0);
-    S.latency = ms < 2500 ? ms : null;   // ignore pings that sat in a queue while the Mac was asleep
+    S.latency = ms < 2500 ? ms : null;
   } catch { S.latency = null; }
   updateSubtitle();
 }
-setInterval(measure, 15000);
-// Wi-Fi ↔ 4G switches and iOS backgrounding silently kill sockets — reconnect immediately
+setInterval(measure, 20000);
+// Wi-Fi ↔ 4G switches and iOS backgrounding silently kill connections — reconnect immediately
 let hiddenAt = 0;
-window.addEventListener('online', () => { if (S.link) { S.link.kick(true); setTimeout(measure, 800); } });
-window.addEventListener('pageshow', e => { if (e.persisted && S.link) S.link.kick(true); });
+window.addEventListener('online', () => { if (S.link) { S.link.wake(); setTimeout(measure, 800); } });
+window.addEventListener('pageshow', e => { if (e.persisted && S.link) S.link.wake(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') { hiddenAt = Date.now(); return; }
+  const visible = document.visibilityState === 'visible';
+  if (S.link) S.link.setWatching(visible);
+  if (!visible) { hiddenAt = Date.now(); return; }
   if (!S.link) return;
-  if (Date.now() - hiddenAt > 4000) S.link.kick(true);
-  watch(); setTimeout(measure, 600);
+  if (Date.now() - hiddenAt > 3000) S.link.wake();
+  setTimeout(measure, 600);
   if (LS.get('wake', false)) wake(true);
 });
 
@@ -384,7 +373,7 @@ function iconEl(btn) {
   if (/^(https?:|data:|\/)/.test(ic)) return h('img', { class: 'ico', src: ic, alt: '', draggable: 'false' });
   return h('span', { class: 'ico' }, ic || (S.actionMap[btn.type] && S.actionMap[btn.type].icon) || '⬜️');
 }
-/* App icons come from your Mac through the relay, then live on the phone forever (cached). */
+/* App icons come from your Mac (encrypted), then stay cached on the phone. */
 const BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 const iconMem = new Map();
 let iconQueue = Promise.resolve();
@@ -1094,9 +1083,9 @@ function openSettings() {
       h('div', { class: 'row tap', onclick: resetConfig }, h('div', { class: 'rl', style: { color: 'var(--err)' } }, '♻️ Reset to the starter deck'), h('span', { class: 'val', html: I.chev }))),
     sec('Connection'), group(
       h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Your Mac', h('div', { class: 'hint' }, (srv.host || '').replace(/\.local$/, ''))), h('span', { class: 'val' }, S.connWhy === 'ok' ? '🟢 Online' : S.connWhy === 'offline' ? '⚪️ No internet' : '🟠 Not answering')),
-      h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Speed', h('div', { class: 'hint' }, 'Phone → relay → Mac → back')), h('span', { class: 'val' }, S.latency != null ? `⚡ ${S.latency}ms` : '—')),
-      h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Relays', h('div', { class: 'hint' }, 'Free public relays. Any one being up is enough.')), h('span', { class: 'val' }, `${S.relaysUp || 0}/${S.relaysTotal || 3} connected`)),
-      h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Encryption', h('div', { class: 'hint' }, 'AES-256, end to end. Relays can’t read or fake anything.')), h('span', { class: 'val' }, '🔐 On')),
+      h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Speed', h('div', { class: 'hint' }, 'Phone → Mac → back, encrypted')), h('span', { class: 'val' }, S.latency != null ? `⚡ ${S.latency}ms` : '—')),
+      h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Route', h('div', { class: 'hint' }, 'Normal HTTPS through Cloudflare. Works on any network.')), h('span', { class: 'val' }, S.link && S.link.url ? '🌍 Connected' : '—')),
+      h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Encryption', h('div', { class: 'hint' }, 'AES-256, end to end. Nobody in the middle can read or fake anything.')), h('span', { class: 'val' }, '🔐 On')),
       h('div', { class: 'row' }, h('div', { class: 'rl' }, 'Version'), h('span', { class: 'val' }, srv.version || '—')),
       h('div', { class: 'row tap', onclick: async () => { if (await confirmBox('Unpair this phone?', 'You’ll need to scan the QR (or type a code) to connect again.', 'Unpair', true)) { sh.close(); unpair(); } } }, h('div', { class: 'rl' }, '🔌 Unpair this phone')),
       h('div', { class: 'row tap', onclick: async () => { if (await confirmBox('Unpair every phone?', 'Your Mac makes a brand-new key and every phone (this one too) gets kicked out. Use it if you lose a phone.', 'Unpair all', true)) { try { await api('POST', '/rotate'); } catch {} sh.close(); unpair('All phones unpaired. Scan the new QR on your Mac.'); } } }, h('div', { class: 'rl', style: { color: 'var(--err)' } }, '🔐 Unpair all phones'))),
