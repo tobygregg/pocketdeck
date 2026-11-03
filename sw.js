@@ -1,7 +1,7 @@
 /* PocketDeck service worker — makes the app open instantly, even before it reaches your Mac.
    App files: served from cache straight away, refreshed in the background.
    The live connection to your Mac goes to a different (Cloudflare) address, so it never touches this cache. */
-const CACHE = 'pocketdeck-v4';
+const CACHE = 'pocketdeck-v5';
 const SHELL = ['./', 'app.js', 'link.js', 'deck-config.js', 'style.css', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon.svg'];
 const BASE = new URL('./', self.location).pathname;
 const SHELL_PATHS = new Set(SHELL.map(f => new URL(f, self.location).pathname));
