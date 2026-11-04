@@ -1,16 +1,16 @@
-PocketDeck network check — Tue Nov 03 2026 21:50:50 GMT+0000 (Greenwich Mean Time)
+PocketDeck network check — Wed Nov 04 2026 10:50:13 GMT+0000 (Greenwich Mean Time)
 
-Normal web (HTTPS 443): HTTP 200 (93ms)
-GitHub API: HTTP 200 (90ms)
-Cloudflare tunnel port 7844 (TCP): open (27ms)
-Cloudflare quick-tunnel API: HTTP 405 (89ms)
-MQTT relay hivemq :8884: WORKS (8824ms)
-MQTT relay emqx :8084: WORKS (445ms)
-MQTT relay mosquitto :8081: BLOCKED (connection failed)
+Normal web (HTTPS 443): HTTP 200 (618ms)
+GitHub API: HTTP 200 (159ms)
+Cloudflare tunnel port 7844 (TCP): BLOCKED (timeout)
+Cloudflare quick-tunnel API: HTTP 405 (727ms)
+MQTT relay hivemq :8884: BLOCKED (timeout)
+MQTT relay emqx :8084: BLOCKED (timeout)
+MQTT relay mosquitto :8081: BLOCKED (timeout)
 MQTT relay eclipse :443: BLOCKED (timeout)
-MQTT relay shiftr :443: WORKS (251ms)
-ntfy.sh (443): HTTP 200 (318ms)
+MQTT relay shiftr :443: WORKS (863ms)
+ntfy.sh (443): HTTP 200 (1170ms)
 
 Node v26.13.0 · PocketDeck 3.1.0
-Relays: [{"url":"wss://public.cloud.shiftr.io","ok":true},{"url":"wss://broker.hivemq.com:8884/mqtt","ok":true},{"url":"wss://broker.emqx.io:8084/mqtt","ok":true},{"url":"wss://test.mosquitto.org:8081/mqtt","ok":false}]
-GitHub: {"ok":true,"error":null,"at":1793742612228}
+Relays: [{"url":"wss://public.cloud.shiftr.io","ok":true},{"url":"wss://broker.hivemq.com:8884/mqtt","ok":false},{"url":"wss://broker.emqx.io:8084/mqtt","ok":false},{"url":"wss://test.mosquitto.org:8081/mqtt","ok":false}]
+GitHub: {"ok":true,"error":null,"at":1793789402691}
